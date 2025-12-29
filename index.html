@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>JS Survivor Demo</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #222; color: white; font-family: sans-serif; }
+        canvas { display: block; background: #333; }
+        #ui { position: absolute; top: 10px; left: 10px; pointer-events: none; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div>Level: <span id="lv">1</span> | 몬스터 처치: <span id="kills">0</span></div>
+        <div id="stats">탄환: 1 | 공격력: 10 | 장판 크기: 0</div>
+    </div>
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+// --- 게임 설정 및 상태 ---
+const keys = {};
+let frame = 0;
+let kills = 0;
+
+const player = {
+    x: canvas.width / 2,
+    y: canvas.height / 2,
+    size: 20,
+    speed: 3,
+    hp: 100,
+    // 아이템 스탯
+    bulletCount: 1,
+    damage: 10,
+    auraSize: 0,
+    atkDelay: 30,
+    atkTimer: 0
+};
+
+const enemies = [];
+const bullets = [];
+const enemyBullets = [];
+const items = []; // 상자
+
+// --- 유틸리티 함수 ---
+function getDist(o1, o2) { return Math.hypot(o1.x - o2.x, o1.y - o2.y); }
+
+// --- 오브젝트 생성 ---
+function spawnEnemy() {
+    const edge = Math.floor(Math.random() * 4);
+    let x, y;
+    if (edge === 0) { x = Math.random() * canvas.width; y = -30; }
+    else if (edge === 1) { x = Math.random() * canvas.width; y = canvas.height + 30; }
+    else if (edge === 2) { x = -30; y = Math.random() * canvas.height; }
+    else { x = canvas.width + 30; y = Math.random() * canvas.height; }
+
+    const isRanged = Math.random() > 0.8; // 20% 확률로 원거리 몹
+    enemies.push({
+        x, y, 
+        type: isRanged ? 'ranged' : 'melee',
+        hp: 20 + (frame / 1000),
+        speed: isRanged ? 1 : 1.5,
+        size: 15,
+        shootTimer: 0
+    });
+}
+
+function spawnBox(x, y) {
+    items.push({ x, y, size: 15 });
+}
+
+// --- 메인 루프 ---
+function update() {
+    frame++;
+    
+    // 1. 플레이어 이동
+    if (keys['ArrowUp'] || keys['w']) player.y -= player.speed;
+    if (keys['ArrowDown'] || keys['s']) player.y += player.speed;
+    if (keys['ArrowLeft'] || keys['a']) player.x -= player.speed;
+    if (keys['ArrowRight'] || keys['d']) player.x += player.speed;
+
+    // 2. 몬스터 스폰 (시간이 갈수록 빈도 증가)
+    if (frame % Math.max(10, 60 - Math.floor(frame/500)) === 0) spawnEnemy();
+
+    // 3. 자동 사격
+    player.atkTimer++;
+    if (player.atkTimer >= player.atkDelay && enemies.length > 0) {
+        // 가장 가까운 적 찾기
+        let target = enemies.reduce((prev, curr) => 
+            getDist(player, curr) < getDist(player, prev) ? curr : prev
+        );
+
+        const angle = Math.atan2(target.y - player.y, target.x - player.x);
+        for(let i=0; i<player.bulletCount; i++) {
+            const spread = (i - (player.bulletCount-1)/2) * 0.2; // 탄퍼짐
+            bullets.push({
+                x: player.x, y: player.y,
+                vx: Math.cos(angle + spread) * 7,
+                vy: Math.sin(angle + spread) * 7,
+                damage: player.damage
+            });
+        }
+        player.atkTimer = 0;
+    }
+
+    // 4. 투사체 이동 및 충돌
+    bullets.forEach((b, bi) => {
+        b.x += b.vx; b.y += b.vy;
+        enemies.forEach((e, ei) => {
+            if (getDist(b, e) < e.size) {
+                e.hp -= b.damage;
+                bullets.splice(bi, 1);
+            }
+        });
+    });
+
+    // 5. 몬스터 로직
+    enemies.forEach((e, ei) => {
+        const dist = getDist(player, e);
+        const angle = Math.atan2(player.y - e.y, player.x - e.x);
+
+        if (e.type === 'melee') {
+            e.x += Math.cos(angle) * e.speed;
+            e.y += Math.sin(angle) * e.speed;
+        } else {
+            // 원거리: 일정 거리 유지
+            if (dist > 200) {
+                e.x += Math.cos(angle) * e.speed;
+                e.y += Math.sin(angle) * e.speed;
+            }
+            e.shootTimer++;
+            if (e.shootTimer > 100) {
+                enemyBullets.push({
+                    x: e.x, y: e.y,
+                    vx: Math.cos(angle) * 4,
+                    vy: Math.sin(angle) * 4
+                });
+                e.shootTimer = 0;
+            }
+        }
+
+        // 마력 장판 데미지 (지속형)
+        if (player.auraSize > 0 && dist < player.auraSize) {
+            e.hp -= 0.5;
+        }
+
+        if (e.hp <= 0) {
+            if (Math.random() > 0.9) spawnBox(e.x, e.y); // 10% 확률로 상자
+            enemies.splice(ei, 1);
+            kills++;
+        }
+    });
+
+    // 6. 적 투사체 이동
+    enemyBullets.forEach((eb, ebi) => {
+        eb.x += eb.vx; eb.y += eb.vy;
+        if (getDist(eb, player) < player.size) {
+            player.hp -= 5;
+            enemyBullets.splice(ebi, 1);
+        }
+    });
+
+    // 7. 아이템(상자) 획득
+    items.forEach((box, i) => {
+        if (getDist(player, box) < player.size + box.size) {
+            const rand = Math.floor(Math.random() * 3);
+            if (rand === 0 && player.bulletCount < 7) player.bulletCount++;
+            else if (rand === 1) player.damage += 5;
+            else if (rand === 2) player.auraSize += 20;
+            items.splice(i, 1);
+        }
+    });
+
+    draw();
+    requestAnimationFrame(update);
+}
+
+// --- 그리기 ---
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // 마력 장판
+    if (player.auraSize > 0) {
+        ctx.beginPath();
+        ctx.arc(player.x, player.y, player.auraSize, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(100, 100, 255, 0.2)';
+        ctx.fill();
+    }
+
+    // 플레이어
+    ctx.fillStyle = 'cyan';
+    ctx.fillRect(player.x - 10, player.y - 10, 20, 20);
+
+    // 적
+    enemies.forEach(e => {
+        ctx.fillStyle = e.type === 'melee' ? 'red' : 'orange';
+        ctx.beginPath();
+        ctx.arc(e.x, e.y, e.size, 0, Math.PI*2);
+        ctx.fill();
+    });
+
+    // 아군 탄환
+    ctx.fillStyle = 'yellow';
+    bullets.forEach(b => ctx.fillRect(b.x, b.y, 4, 4));
+
+    // 적군 탄환
+    ctx.fillStyle = 'white';
+    enemyBullets.forEach(eb => ctx.beginPath() || ctx.arc(eb.x, eb.y, 3, 0, Math.PI*2) || ctx.fill());
+
+    // 상자
+    ctx.fillStyle = 'gold';
+    items.forEach(box => ctx.fillRect(box.x-7, box.y-7, 15, 15));
+
+    // UI 업데이트
+    document.getElementById('kills').innerText = kills;
+    document.getElementById('stats').innerText = `탄환: ${player.bulletCount} | 공격력: ${player.damage} | 장판: ${player.auraSize}`;
+}
+
+window.addEventListener('keydown', e => keys[e.key] = true);
+window.addEventListener('keyup', e => keys[e.key] = false);
+
+update();
+</script>
+</body>
+</html>
